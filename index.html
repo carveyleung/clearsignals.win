@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClearSignals</title>
+    <meta
+      name="description"
+      content="ClearSignals helps students, teachers, and researchers gather project information through focused research tools."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="ClearSignals home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>clearsignals.win</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary">
+        <a href="#apps">Apps</a>
+        <a href="#about">About</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Research signals, gathered clearly</p>
+          <h1 id="hero-title">clearsignals<wbr />.win</h1>
+          <p class="lede">
+            A focused information workspace for students, teachers, and researchers who need to gather, listen to,
+            track, and organize project material without losing the thread.
+          </p>
+          <div class="hero-actions" aria-label="Featured app links">
+            <a class="button primary" href="https://trial-pulse-v2.vercel.app/" target="_blank" rel="noreferrer">
+              <i data-lucide="activity" aria-hidden="true"></i>
+              Clinical Trial Tracker
+            </a>
+            <a class="button" href="https://catalysttracker-v2.vercel.app/" target="_blank" rel="noreferrer">
+              <i data-lucide="sparkles" aria-hidden="true"></i>
+              Catalyst Tracker
+            </a>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="ClearSignals research dashboard preview">
+          <img src="./assets/research-hub.png" alt="Abstract research dashboard with source cards and signal tracking" />
+        </div>
+      </section>
+
+      <section class="mission-band" id="about" aria-label="About ClearSignals">
+        <div>
+          <span class="metric">4</span>
+          <span class="metric-label">focused tools</span>
+        </div>
+        <p>
+          Built from years of consulting across science, business, and finance, ClearSignals helps students,
+          researchers, and teachers enhance their workflow with practical tools for gathering information, tracking
+          important signals, listening to source material, and turning ideas into usable notes.
+        </p>
+      </section>
+
+      <section class="apps" id="apps" aria-labelledby="apps-title">
+        <div class="section-heading">
+          <p class="eyebrow">Tool directory</p>
+          <h2 id="apps-title">Choose the right signal for the work in front of you.</h2>
+        </div>
+
+        <div class="app-grid">
+          <a class="app-card" href="https://trial-pulse-v2.vercel.app/" target="_blank" rel="noreferrer">
+            <span class="card-icon clinical"><i data-lucide="activity" aria-hidden="true"></i></span>
+            <span class="card-title">Clinical Trial Tracker</span>
+            <span class="card-copy">Follow trial movement, updates, and research signals in a clean tracking view.</span>
+            <span class="card-link">Open app <i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+          </a>
+
+          <a class="app-card" href="https://catalysttracker-v2.vercel.app/" target="_blank" rel="noreferrer">
+            <span class="card-icon catalyst"><i data-lucide="sparkles" aria-hidden="true"></i></span>
+            <span class="card-title">Catalyst Tracker</span>
+            <span class="card-copy">Monitor upcoming catalysts and organize the events that matter to a project.</span>
+            <span class="card-link">Open app <i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+          </a>
+
+          <a class="app-card" href="https://listendocs.vercel.app/" target="_blank" rel="noreferrer">
+            <span class="card-icon listen"><i data-lucide="headphones" aria-hidden="true"></i></span>
+            <span class="card-title">Text to Speech for PDFs and Textbooks</span>
+            <span class="card-copy">Turn long reading assignments, PDFs, and textbook chapters into listenable material.</span>
+            <span class="card-link">Open app <i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+          </a>
+
+          <a class="app-card" href="https://voicescribe.vercel.app/" target="_blank" rel="noreferrer">
+            <span class="card-icon voice"><i data-lucide="mic-2" aria-hidden="true"></i></span>
+            <span class="card-title">VoiceScribe</span>
+            <span class="card-copy">Capture spoken thoughts and convert research notes into clearer written material.</span>
+            <span class="card-link">Open app <i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>clearsignals.win</span>
+      <span>Built for projects that need better information flow.</span>
+    </footer>
+
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        if (window.lucide) {
+          window.lucide.createIcons({
+            attrs: {
+              "stroke-width": 1.8
+            }
+          });
+        }
+      });
+    </script>
+  </body>
+</html>
