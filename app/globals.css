@@ -107,3 +107,9 @@ body {
 .prose pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow: auto; font-size: 13px; }
 
 .foot { margin-top: 26px; color: var(--muted); font-size: 12.5px; text-align: center; }
+
+.checkline { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; font-size: 13.5px; color: var(--text); cursor: pointer; }
+.checkline input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+.row { display: flex; gap: 8px; margin-top: 10px; }
+.row .btn { flex: 1; justify-content: center; }

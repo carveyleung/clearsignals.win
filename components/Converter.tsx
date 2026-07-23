@@ -1,289 +1,295 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeText, wordCount, estimateMinutes } from "@/lib/textNormalize";
 import { chunkText } from "@/lib/chunk";
 import { parseFile } from "@/lib/parsers";
+import {
+  systemVoicesSupported, getSystemVoices, onSystemVoices,
+  speakSystem, pauseSystem, resumeSystem,
+  listPiperVoices, piperStored, downloadPiperVoice, piperSynthesize, PiperVoice,
+} from "@/lib/localTts";
 
-const OPENAI_VOICES = [
-  "alloy", "ash", "ballad", "coral", "echo",
-  "fable", "onyx", "nova", "sage", "shimmer",
-];
+type Engine = "system" | "piper" | "openai" | "elevenlabs";
 
-const ELEVEN_VOICES: { id: string; name: string }[] = [
-  { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel (calm, narration)" },
-  { id: "pNInz6obpgDQGcFmaJgB", name: "Adam (deep, narration)" },
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah (soft)" },
-  { id: "TxGEqnHWrfWFTfGW9XjX", name: "Josh (young male)" },
+const OPENAI_VOICES = ["alloy","ash","ballad","coral","echo","fable","onyx","nova","sage","shimmer"];
+const ELEVEN_VOICES = [
+  { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel (calm)" },
+  { id: "pNInz6obpgDQGcFmaJgB", name: "Adam (deep)" },
   { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel (British)" },
 ];
-
 const DEFAULT_INSTRUCTIONS =
-  "Read aloud like a professional audiobook narrator. Use a warm, even, natural cadence. " +
-  "Phrase complete sentences smoothly and pause only at commas and sentence endings. " +
-  "Do not insert unnatural pauses in the middle of a sentence.";
-
-type Provider = "openai" | "elevenlabs";
+  "Read aloud like a professional audiobook narrator with a warm, even, natural cadence. " +
+  "Pause only at commas and sentence endings; never in the middle of a sentence.";
 
 export default function Converter() {
   const [text, setText] = useState("");
-  const [title, setTitle] = useState("audiobook");
-  const [provider, setProvider] = useState<Provider>("openai");
+  const [title, setTitle] = useState("audio");
+  const [engine, setEngine] = useState<Engine>("system");
+
+  // system voices
+  const [sysVoices, setSysVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [sysVoiceURI, setSysVoiceURI] = useState("");
+  const [rate, setRate] = useState(1);
+  const [pitch, setPitch] = useState(1);
+
+  // piper voices
+  const [piperVoices, setPiperVoices] = useState<PiperVoice[]>([]);
+  const [piperVoice, setPiperVoice] = useState("en_US-hfc_female-medium");
+  const [stored, setStored] = useState<string[]>([]);
+  const [dlFrac, setDlFrac] = useState<number | null>(null);
+
+  // cloud
   const [openaiVoice, setOpenaiVoice] = useState("alloy");
   const [openaiModel, setOpenaiModel] = useState("gpt-4o-mini-tts");
   const [elevenVoice, setElevenVoice] = useState(ELEVEN_VOICES[0].id);
-  const [elevenModel, setElevenModel] = useState("eleven_multilingual_v2");
   const [instructions, setInstructions] = useState(DEFAULT_INSTRUCTIONS);
-  const [speed, setSpeed] = useState(1);
 
   const [parsing, setParsing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const [progress, setProgress] = useState(0);
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
   const cancelled = useRef(false);
+  const stopSpeak = useRef<() => void>(() => {});
   const addLog = (m: string) => setLog((l) => [...l, m]);
 
+  // load system voices
+  useEffect(() => {
+    if (!systemVoicesSupported()) return;
+    const off = onSystemVoices((v) => {
+      setSysVoices(v);
+      setSysVoiceURI((cur) => cur || v.find((x) => x.default)?.voiceURI || v[0]?.voiceURI || "");
+    });
+    return off;
+  }, []);
+
+  // load piper voice catalog + which are already downloaded (only when selected)
+  useEffect(() => {
+    if (engine !== "piper") return;
+    (async () => {
+      try {
+        const [voices, s] = await Promise.all([listPiperVoices(), piperStored()]);
+        if (voices.length) setPiperVoices(voices);
+        setStored(s);
+      } catch (e: any) {
+        setError("Could not load the neural voice list: " + (e?.message || e));
+      }
+    })();
+  }, [engine]);
+
   const onFile = useCallback(async (file: File) => {
-    setError(null);
-    setParsing(true);
-    setLog([]);
+    setError(null); setParsing(true); setLog([]);
     try {
       const { text: raw, title: t } = await parseFile(file);
       const clean = normalizeText(raw);
       if (!clean) throw new Error("No readable text was found in that file.");
-      setText(clean);
-      setTitle(t || "audiobook");
-      addLog(`Loaded "${file.name}" - cleaned ${wordCount(clean).toLocaleString()} words.`);
+      setText(clean); setTitle(t || "audio");
+      addLog(`Loaded "${file.name}" - ${wordCount(clean).toLocaleString()} words.`);
     } catch (e: any) {
       setError(e?.message || "Could not read that file.");
-    } finally {
-      setParsing(false);
-    }
+    } finally { setParsing(false); }
   }, []);
 
-  const cleanCurrent = () => {
-    setText((t) => normalizeText(t));
-    addLog("Re-cleaned the text (joined soft line breaks, fixed spacing).");
+  const sentencesFrom = (t: string) => chunkText(t, 240); // short, sentence-aligned blocks
+  const blocksFrom = (t: string) => chunkText(t, 800);    // larger blocks for neural/cloud
+
+  // ---- SYSTEM (Web Speech): plays audio, no file ----
+  const playSystem = () => {
+    setError(null);
+    const clean = normalizeText(text);
+    if (!clean.trim()) { setError("Add some text or upload a file first."); return; }
+    const sentences = sentencesFrom(clean);
+    setSpeaking(true); setProgress(0); setLog([]);
+    stopSpeak.current = speakSystem(sentences, {
+      voiceURI: sysVoiceURI, rate, pitch,
+      onProgress: (d, tot) => setProgress(Math.round((d / tot) * 100)),
+      onDone: () => setSpeaking(false),
+      onError: (m) => { setError(m); setSpeaking(false); },
+    });
   };
 
-  const generate = async () => {
-    setError(null);
-    setAudioUrl(null);
-    setLog([]);
-    const clean = normalizeText(text);
-    setText(clean);
-    if (!clean.trim()) {
-      setError("Add some text or upload a file first.");
-      return;
-    }
+  // ---- PIPER / CLOUD: build a downloadable file ----
+  const generateFile = async () => {
+    setError(null); setAudioUrl(null); setLog([]); setProgress(0);
+    const clean = normalizeText(text); setText(clean);
+    if (!clean.trim()) { setError("Add some text or upload a file first."); return; }
 
-    const maxLen = provider === "openai" ? 3500 : 2500;
-    const chunks = chunkText(clean, maxLen);
-    addLog(`Split into ${chunks.length} sentence-aligned chunk(s).`);
-
-    cancelled.current = false;
-    setBusy(true);
-    setProgress(0);
-
-    const buffers: ArrayBuffer[] = [];
+    cancelled.current = false; setBusy(true);
     try {
-      for (let i = 0; i < chunks.length; i++) {
-        if (cancelled.current) {
-          addLog("Cancelled.");
-          break;
+      if (engine === "piper") {
+        if (!stored.includes(piperVoice)) {
+          addLog("Downloading voice model (one-time, then cached offline)...");
+          setDlFrac(0);
+          await downloadPiperVoice(piperVoice, (f) => setDlFrac(f));
+          setDlFrac(null);
+          setStored(await piperStored());
         }
-        addLog(`Synthesizing chunk ${i + 1} / ${chunks.length}...`);
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: chunks[i],
-            provider,
-            voice: provider === "openai" ? openaiVoice : elevenVoice,
-            model: provider === "openai" ? openaiModel : elevenModel,
-            instructions,
-            speed,
-          }),
+        const blocks = blocksFrom(clean);
+        addLog(`Synthesizing ${blocks.length} block(s) on-device...`);
+        const blob = await piperSynthesize(blocks, piperVoice, (d, tot) => {
+          setProgress(Math.round((d / tot) * 100));
+          if (cancelled.current) throw new Error("Cancelled.");
         });
-        if (!res.ok) {
-          const j = await res.json().catch(() => ({ error: res.statusText }));
-          throw new Error(j.error || "Request failed.");
-        }
-        buffers.push(await res.arrayBuffer());
-        setProgress(Math.round(((i + 1) / chunks.length) * 100));
-      }
-
-      if (buffers.length && !cancelled.current) {
-        const blob = new Blob(buffers, { type: "audio/mpeg" });
         setAudioUrl(URL.createObjectURL(blob));
-        addLog("Done. Preview or download your audio below.");
+        addLog("Done. Preview or download below.");
+      } else {
+        // cloud (optional): OpenAI / ElevenLabs
+        const maxLen = engine === "openai" ? 3500 : 2500;
+        const blocks = chunkText(clean, maxLen);
+        const buffers: ArrayBuffer[] = [];
+        for (let i = 0; i < blocks.length; i++) {
+          if (cancelled.current) { addLog("Cancelled."); break; }
+          addLog(`Cloud chunk ${i + 1}/${blocks.length}...`);
+          const res = await fetch("/api/tts", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: blocks[i], provider: engine,
+              voice: engine === "openai" ? openaiVoice : elevenVoice,
+              model: engine === "openai" ? openaiModel : "eleven_multilingual_v2",
+              instructions,
+            }),
+          });
+          if (!res.ok) { const j = await res.json().catch(() => ({error: res.statusText})); throw new Error(j.error); }
+          buffers.push(await res.arrayBuffer());
+          setProgress(Math.round(((i + 1) / blocks.length) * 100));
+        }
+        if (buffers.length && !cancelled.current) {
+          setAudioUrl(URL.createObjectURL(new Blob(buffers, { type: "audio/mpeg" })));
+          addLog("Done.");
+        }
       }
     } catch (e: any) {
-      setError(e?.message || "Something went wrong during synthesis.");
-    } finally {
-      setBusy(false);
-    }
+      setError(e?.message || "Generation failed.");
+    } finally { setBusy(false); }
   };
 
   const minutes = estimateMinutes(text);
+  const ext = engine === "piper" ? "wav" : "mp3";
 
   return (
     <div className="grid">
-      {/* LEFT: source text */}
+      {/* LEFT: source */}
       <div className="card">
         <div className="card-head">
           <h2>1. Source</h2>
           <div className="head-actions">
             <label className={parsing ? "btn ghost disabled" : "btn ghost"}>
               {parsing ? "Reading..." : "Upload .txt / .pdf / .epub"}
-              <input
-                type="file"
-                accept=".txt,.md,.pdf,.epub,text/plain,application/pdf,application/epub+zip"
-                hidden
-                disabled={parsing || busy}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onFile(f);
-                  e.target.value = "";
-                }}
-              />
+              <input type="file" accept=".txt,.md,.pdf,.epub" hidden disabled={parsing || busy}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
             </label>
-            <button className="btn ghost" onClick={cleanCurrent} disabled={busy}>
-              Clean text
-            </button>
+            <button className="btn ghost" onClick={() => setText((t) => normalizeText(t))} disabled={busy}>Clean text</button>
           </div>
         </div>
-
-        <textarea
-          className="editor"
-          placeholder="Paste text here, or upload a .txt, .pdf, or .epub file above. You can edit before generating audio."
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={busy}
-        />
-        <div className="meta">
-          {wordCount(text).toLocaleString()} words - est. {minutes < 1
-            ? "<1"
-            : Math.round(minutes)}{" "}
-          min of audio
-        </div>
+        <textarea className="editor" placeholder="Paste text, or upload a .txt / .pdf / .epub. Edit before generating."
+          value={text} onChange={(e) => setText(e.target.value)} disabled={busy} />
+        <div className="meta">{wordCount(text).toLocaleString()} words - est. {minutes < 1 ? "<1" : Math.round(minutes)} min</div>
       </div>
 
-      {/* RIGHT: settings + output */}
+      {/* RIGHT: engine + output */}
       <div className="card">
-        <div className="card-head">
-          <h2>2. Voice</h2>
-        </div>
+        <div className="card-head"><h2>2. Voice engine</h2></div>
 
         <label className="field">
-          <span>Provider</span>
-          <select
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as Provider)}
-            disabled={busy}
-          >
-            <option value="openai">OpenAI (natural, low cost)</option>
-            <option value="elevenlabs">ElevenLabs (most premium)</option>
+          <span>Engine</span>
+          <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={busy || speaking}>
+            <option value="system">On-device - system voices (instant, no download)</option>
+            <option value="piper">On-device - Piper neural (downloadable file)</option>
+            <option value="openai">Cloud - OpenAI (needs API key)</option>
+            <option value="elevenlabs">Cloud - ElevenLabs (needs API key)</option>
           </select>
         </label>
 
-        {provider === "openai" ? (
+        {engine === "system" && (
+          systemVoicesSupported() ? (
+            <>
+              <label className="field">
+                <span>Voice ({sysVoices.length} installed on your device)</span>
+                <select value={sysVoiceURI} onChange={(e) => setSysVoiceURI(e.target.value)} disabled={speaking}>
+                  {sysVoices.map((v) => (
+                    <option key={v.voiceURI} value={v.voiceURI}>{v.name} - {v.lang}{v.localService ? "" : " (network)"}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field"><span>Rate: {rate.toFixed(2)}x</span>
+                <input type="range" min={0.6} max={1.6} step={0.05} value={rate} onChange={(e) => setRate(parseFloat(e.target.value))} disabled={speaking} /></label>
+              <label className="field"><span>Pitch: {pitch.toFixed(2)}</span>
+                <input type="range" min={0.5} max={1.5} step={0.05} value={pitch} onChange={(e) => setPitch(parseFloat(e.target.value))} disabled={speaking} /></label>
+              {!speaking ? (
+                <button className="btn primary block" onClick={playSystem} disabled={busy}>Play</button>
+              ) : (
+                <div className="row">
+                  <button className="btn ghost" onClick={() => pauseSystem()}>Pause</button>
+                  <button className="btn ghost" onClick={() => resumeSystem()}>Resume</button>
+                  <button className="btn ghost" onClick={() => { stopSpeak.current(); setSpeaking(false); }}>Stop</button>
+                </div>
+              )}
+              <p className="hint">System voices play instantly and never leave your device. For a downloadable file, use the Piper engine.</p>
+            </>
+          ) : <div className="alert">Your browser does not support built-in speech. Use the Piper engine instead.</div>
+        )}
+
+        {engine === "piper" && (
           <>
             <label className="field">
-              <span>Model</span>
-              <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)} disabled={busy}>
-                <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (best rhythm)</option>
-                <option value="tts-1-hd">tts-1-hd (HD)</option>
-                <option value="tts-1">tts-1 (fastest)</option>
+              <span>Neural voice</span>
+              <select value={piperVoice} onChange={(e) => setPiperVoice(e.target.value)} disabled={busy}>
+                {(piperVoices.length ? piperVoices.map((v) => ({ key: v.key, label: `${v.name}${v.language ? " - " + v.language : ""}${stored.includes(v.key) ? " [downloaded]" : ""}` }))
+                  : [{ key: "en_US-hfc_female-medium", label: "en_US-hfc_female-medium" },
+                     { key: "en_US-amy-medium", label: "en_US-amy-medium" },
+                     { key: "en_GB-alan-medium", label: "en_GB-alan-medium" }]
+                ).map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
             </label>
-            <label className="field">
-              <span>Voice</span>
-              <select value={openaiVoice} onChange={(e) => setOpenaiVoice(e.target.value)} disabled={busy}>
-                {OPENAI_VOICES.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </label>
-            {openaiModel === "gpt-4o-mini-tts" ? (
-              <label className="field">
-                <span>Style / rhythm instructions</span>
-                <textarea
-                  className="mini"
-                  value={instructions}
-                  onChange={(e) => setInstructions(e.target.value)}
-                  disabled={busy}
-                />
-              </label>
+            {dlFrac !== null && <div className="bar"><div className="bar-fill" style={{ width: `${Math.round(dlFrac * 100)}%` }} /></div>}
+            <button className="btn primary block" onClick={generateFile} disabled={busy}>{busy ? `Generating... ${progress}%` : "Generate audio"}</button>
+            <p className="hint">First use of a voice downloads its model once (from a free public CDN) and caches it in your browser; after that it runs fully offline.</p>
+          </>
+        )}
+
+        {(engine === "openai" || engine === "elevenlabs") && (
+          <>
+            {engine === "openai" ? (
+              <>
+                <label className="field"><span>Model</span>
+                  <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)} disabled={busy}>
+                    <option value="gpt-4o-mini-tts">gpt-4o-mini-tts</option>
+                    <option value="tts-1-hd">tts-1-hd</option>
+                    <option value="tts-1">tts-1</option>
+                  </select></label>
+                <label className="field"><span>Voice</span>
+                  <select value={openaiVoice} onChange={(e) => setOpenaiVoice(e.target.value)} disabled={busy}>
+                    {OPENAI_VOICES.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select></label>
+              </>
             ) : (
-              <label className="field">
-                <span>Speed: {speed.toFixed(2)}x</span>
-                <input
-                  type="range" min={0.7} max={1.3} step={0.05}
-                  value={speed} onChange={(e) => setSpeed(parseFloat(e.target.value))}
-                  disabled={busy}
-                />
-              </label>
+              <label className="field"><span>Voice</span>
+                <select value={elevenVoice} onChange={(e) => setElevenVoice(e.target.value)} disabled={busy}>
+                  {ELEVEN_VOICES.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select></label>
             )}
-          </>
-        ) : (
-          <>
-            <label className="field">
-              <span>Model</span>
-              <select value={elevenModel} onChange={(e) => setElevenModel(e.target.value)} disabled={busy}>
-                <option value="eleven_multilingual_v2">eleven_multilingual_v2 (most natural)</option>
-                <option value="eleven_turbo_v2_5">eleven_turbo_v2_5 (fast)</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>Voice</span>
-              <select value={elevenVoice} onChange={(e) => setElevenVoice(e.target.value)} disabled={busy}>
-                {ELEVEN_VOICES.map((v) => (
-                  <option key={v.id} value={v.id}>{v.name}</option>
-                ))}
-              </select>
-            </label>
-            <p className="hint">
-              Tip: paste any voice ID from your ElevenLabs Voice Library into the list in
-              <code> components/Converter.tsx</code>.
-            </p>
+            <button className="btn primary block" onClick={generateFile} disabled={busy}>{busy ? `Generating... ${progress}%` : "Generate audio"}</button>
+            <p className="hint">Cloud engines require the matching API key in your Vercel environment variables. They are optional - the on-device engines need no key.</p>
           </>
         )}
 
-        <button className="btn primary block" onClick={generate} disabled={busy || parsing}>
-          {busy ? `Generating... ${progress}%` : "Generate audio"}
-        </button>
-        {busy && (
-          <button className="btn ghost block" onClick={() => (cancelled.current = true)}>
-            Cancel
-          </button>
-        )}
-
-        {busy && (
-          <div className="bar"><div className="bar-fill" style={{ width: `${progress}%` }} /></div>
-        )}
+        {busy && <><div className="bar"><div className="bar-fill" style={{ width: `${progress}%` }} /></div>
+          <button className="btn ghost block" onClick={() => (cancelled.current = true)}>Cancel</button></>}
 
         {error && <div className="alert">{error}</div>}
 
         {audioUrl && (
           <div className="output">
             <audio controls src={audioUrl} style={{ width: "100%" }} />
-            <a className="btn primary block" href={audioUrl} download={`${title || "audio"}.mp3`}>
-              Download MP3
-            </a>
+            <a className="btn primary block" href={audioUrl} download={`${title || "audio"}.${ext}`}>Download {ext.toUpperCase()}</a>
           </div>
         )}
 
-        {log.length > 0 && (
-          <div className="logbox">
-            {log.map((l, i) => (
-              <div key={i}>{l}</div>
-            ))}
-          </div>
-        )}
+        {log.length > 0 && <div className="logbox">{log.map((l, i) => <div key={i}>{l}</div>)}</div>}
       </div>
     </div>
   );
